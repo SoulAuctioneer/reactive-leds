@@ -28,7 +28,8 @@ const uint16_t DEBOUNCE_THRESHOLD = 10;        // Threshold for considering a va
 const float SMOOTHING_FACTOR = 0.2;            // Higher value = more responsive (0.2 = 80% old value, 20% new value)
 
 // Debug flags - greatly reduced
-const bool DEBUG_PRINTS = false;               // Only show essential prints to reduce serial overhead
+const bool DEBUG_PRINTS = true;               // Only show essential prints to reduce serial overhead
+const bool DEBUG_TRANSITIONS = true;          // Show transition state information
 
 // LED pattern intensity thresholds - keeping these for intensity calculations
 const uint8_t INTENSITY_LOW = 64;     // Threshold for low intensity effects
@@ -53,7 +54,8 @@ const uint8_t SPREAD_MAX = 8;  // Maximum spread for gentle glow
 
 // Transition settings - greatly simplified
 const uint16_t TRANSITION_DURATION = 300; // Shortened transition duration for responsiveness
-const uint16_t MIN_UPDATE_INTERVAL = 100; // Shorter interval between parameter updates
+const uint16_t MIN_UPDATE_INTERVAL = 150; // Increased to prevent too frequent updates
+const uint16_t MIN_TRANSITION_REST = 350; // Minimum time between transitions to ensure they complete
 
 // LED Array
 CRGB leds[LED_COUNT];
@@ -166,6 +168,8 @@ void diagnoseHardwareIssues() {
  */
 void updateLEDPattern(bool presence, bool motion, uint8_t presenceIntensity, uint8_t motionIntensity) {
     static uint32_t lastUpdate = 0;
+    static uint32_t lastTransitionStart = 0;
+    static bool transitionActive = false;
     uint32_t now = millis();
     
     // Apply simple exponential smoothing to the intensity values
@@ -179,6 +183,31 @@ void updateLEDPattern(bool presence, bool motion, uint8_t presenceIntensity, uin
     // Only update parameters if enough time has passed since last update
     if (now - lastUpdate < MIN_UPDATE_INTERVAL) {
         return; // Skip this update cycle
+    }
+    
+    // Check if a transition is in progress
+    bool isInTransition = ledPatterns.updateTransitions();
+    
+    // Update our tracking of transition state
+    if (isInTransition) {
+        transitionActive = true;
+        if (DEBUG_TRANSITIONS && !transitionActive) {
+            Serial.println("Transition started");
+        }
+    } else if (transitionActive) {
+        // Transition just ended
+        transitionActive = false;
+        if (DEBUG_TRANSITIONS) {
+            Serial.println("Transition completed");
+        }
+    }
+    
+    // Don't start a new transition if one is in progress or not enough rest time
+    if (transitionActive || (now - lastTransitionStart < MIN_TRANSITION_REST)) {
+        if (DEBUG_TRANSITIONS) {
+            Serial.println("Skipping update - transition active or rest period");
+        }
+        return;
     }
     
     // Calculate new parameters
@@ -220,10 +249,10 @@ void updateLEDPattern(bool presence, bool motion, uint8_t presenceIntensity, uin
     // Check if parameters have changed significantly enough to update pattern
     bool parametersChanged = false;
     
-    // Only modest thresholds, we want visual response but not flickering
-    if (abs((int16_t)newHue - (int16_t)lastHue) > 3 ||
-        abs((int16_t)newBrightness - (int16_t)lastBrightness) > 5 ||
-        abs((int16_t)newSpeed - (int16_t)lastSpeed) > 3 ||
+    // Slightly higher thresholds to reduce unnecessary updates
+    if (abs((int16_t)newHue - (int16_t)lastHue) > 5 ||
+        abs((int16_t)newBrightness - (int16_t)lastBrightness) > 8 ||
+        abs((int16_t)newSpeed - (int16_t)lastSpeed) > 5 ||
         abs((int16_t)newSpread - (int16_t)lastSpread) > 1) {
         
         parametersChanged = true;
@@ -233,6 +262,7 @@ void updateLEDPattern(bool presence, bool motion, uint8_t presenceIntensity, uin
     if (parametersChanged) {
         lastUpdate = now;
         lastPatternChange = now;
+        lastTransitionStart = now;
         
         if (DEBUG_PRINTS) {
             Serial.print("LED params: H=");
@@ -253,16 +283,17 @@ void updateLEDPattern(bool presence, bool motion, uint8_t presenceIntensity, uin
         
         // Start a quick transition
         ledPatterns.startTransition(TRANSITION_DURATION);
+        transitionActive = true; // Mark that we've started a transition
         
         // Update last values
         lastHue = newHue;
         lastBrightness = newBrightness;
         lastSpeed = newSpeed;
         lastSpread = newSpread;
+    } else {
+        // Always update transitions even if parameters haven't changed
+        ledPatterns.updateTransitions();
     }
-    
-    // Always update transitions if any in progress
-    ledPatterns.updateTransitions();
     
     // Always show
     FastLED.show();
@@ -434,5 +465,5 @@ void loop() {
     updateLEDPattern(presenceDetected, motionDetected, presenceIntensity, motionIntensity);
     
     // Small delay to prevent too frequent updates
-    delay(10);
+    delay(15); // Increased from 10ms to 15ms
 }

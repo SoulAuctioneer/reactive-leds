@@ -94,7 +94,9 @@ bool LEDPatterns::updateTransitions() {
     uint32_t elapsed = currentTime - transitionStartTime;
     
     if (elapsed >= transitionDuration) {
-        // Transition complete
+        // Transition complete - don't blend anymore, just use the final state
+        // No code needed here as leds[] already contains the target state
+        // We just need to mark the transition as complete
         transitionActive = false;
         return false;
     }
@@ -242,9 +244,19 @@ void LEDPatterns::gentleGlow(uint8_t hue, uint8_t brightness, uint8_t speed, uin
     // Clear LEDs first
     fill_solid(leds, numLeds, CRGB::Black);
     
-    // Update existing glow points
+    // Update existing glow points - apply new hue and brightness
     for (uint8_t i = 0; i < MAX_GLOW_POINTS; i++) {
         if (glowPoints[i].active) {
+            // Update the hue of existing glow points to match the new value
+            // This helps create a more immediate response to color changes
+            glowPoints[i].hue = hue + random8(10) - 5; // Small variation
+            
+            // Update max intensity based on new brightness
+            glowPoints[i].maxIntensity = brightness - random8(10);
+            
+            // Update spread if appropriate
+            glowPoints[i].spread = spread + random8(2) - 1;
+            
             // Update the glow point state
             bool stillActive = updateGlowPoint(i, speed);
             
