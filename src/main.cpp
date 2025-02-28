@@ -24,15 +24,36 @@ const uint16_t MOTION_MIN_VALUE = 70;          // Increased from 40 to 70 to fil
 const uint8_t DEBOUNCE_COUNT = 3;              // Number of consecutive readings required to change state
 const uint16_t DEBOUNCE_THRESHOLD = 10;        // Threshold for considering a value stable
 
-// LED pattern intensity thresholds
-const uint8_t INTENSITY_LOW = 64;     // Threshold for low intensity effects (breathing)
-const uint8_t INTENSITY_MEDIUM = 128; // Threshold for medium intensity effects (pulse)
-const uint8_t INTENSITY_HIGH = 192;   // Threshold for high intensity effects (chase/fire/twinkle)
+// Smoothing constants
+const float SMOOTHING_FACTOR = 0.2;            // Higher value = more responsive (0.2 = 80% old value, 20% new value)
+
+// Debug flags - greatly reduced
+const bool DEBUG_PRINTS = false;               // Only show essential prints to reduce serial overhead
+
+// LED pattern intensity thresholds - keeping these for intensity calculations
+const uint8_t INTENSITY_LOW = 64;     // Threshold for low intensity effects
+const uint8_t INTENSITY_MEDIUM = 128; // Threshold for medium intensity effects
+const uint8_t INTENSITY_HIGH = 192;   // Threshold for high intensity effects
 const uint8_t INTENSITY_MAX = 255;    // Maximum intensity value
 
+// LED brightness and speed ranges
+const uint8_t BRIGHTNESS_MIN = 80;    // Minimum brightness for any effect (not too dim)
+const uint8_t BRIGHTNESS_MAX = 220;   // Maximum brightness (avoid full brightness)
+const uint8_t SPEED_MIN = 20;         // Minimum animation speed
+const uint8_t SPEED_MAX = 100;        // Maximum animation speed
+
 // Color range constants
-const uint8_t HUE_HIGH = 0;    // Red (for high intensity)
-const uint8_t HUE_LOW = 160;   // Blue (for low intensity)
+const uint8_t HUE_COOL = 160;   // Blue (for low presence/no motion)
+const uint8_t HUE_NEUTRAL = 96; // Green (for medium presence)
+const uint8_t HUE_WARM = 0;     // Red (for high motion)
+
+// Glow effect spread constants
+const uint8_t SPREAD_MIN = 3;  // Minimum spread for gentle glow
+const uint8_t SPREAD_MAX = 8;  // Maximum spread for gentle glow
+
+// Transition settings - greatly simplified
+const uint16_t TRANSITION_DURATION = 300; // Shortened transition duration for responsiveness
+const uint16_t MIN_UPDATE_INTERVAL = 100; // Shorter interval between parameter updates
 
 // LED Array
 CRGB leds[LED_COUNT];
@@ -49,6 +70,10 @@ uint8_t presenceIntensity = 0;
 int16_t presenceValue = 0;
 int16_t motionValue = 0;
 
+// Smoothed intensity values
+float smoothedPresenceIntensity = 0;
+float smoothedMotionIntensity = 0;
+
 // Debouncing variables
 uint8_t presenceDetectionCount = 0;
 uint8_t presenceNonDetectionCount = 0;
@@ -63,8 +88,12 @@ uint16_t presenceThreshold = PRESENCE_THRESHOLD_DEFAULT;
 uint8_t motionThreshold = MOTION_THRESHOLD_DEFAULT;
 uint8_t hysteresis = HYSTERESIS_DEFAULT;
 
-// Pattern selection
-PatternType currentPattern = PATTERN_BREATHING;
+// Variables for tracking parameter changes
+uint8_t lastHue = HUE_COOL;
+uint8_t lastBrightness = BRIGHTNESS_MIN;
+uint8_t lastSpeed = SPEED_MIN;
+uint8_t lastSpread = SPREAD_MIN;
+uint32_t lastPatternChange = 0;
 
 /**
  * Test Serial connection with a simple sequence of characters
@@ -96,55 +125,147 @@ void initI2C() {
  */
 void initLEDs() {
   FastLED.addLeds<WS2812B, LED_PIN, GRB>(leds, LED_COUNT);
-  FastLED.setBrightness(50); // 0-255
+  FastLED.setBrightness(80); // Increased from 50 to 80 for more vibrant effects
   FastLED.clear();
   FastLED.show();
   Serial.println("LEDs initialized");
 }
 
 /**
- * Update LED pattern based on sensor data
- * 
- * @param presence Whether human presence is detected
- * @param motion Whether motion is detected
- * @param intensity Overall intensity value (0-255)
+ * Check for LED-related hardware issues
  */
-void updateLEDPattern(bool presence, bool motion, uint8_t intensity) {
-  // Calculate hue based on intensity (blue when low, red when high)
-  uint8_t hue = map(intensity, 0, INTENSITY_MAX, HUE_LOW, HUE_HIGH);
+void diagnoseHardwareIssues() {
+  // Check power settings for FastLED
+  Serial.println("\n----- LED Hardware Diagnostics -----");
+  Serial.print("LED Count: ");
+  Serial.println(LED_COUNT);
   
-  if (presence || motion) {
-    // Presence or motion detected - select pattern based on intensity
-    if (intensity < INTENSITY_LOW) {
-      // Low intensity - breathing effect
-      ledPatterns.breathing(CHSV(hue, 255, 255), map(intensity, 0, INTENSITY_LOW, 5, 15));
-    } 
-    else if (intensity < INTENSITY_MEDIUM) {
-      // Medium-low intensity - pulse effect
-      ledPatterns.pulse(CHSV(hue, 255, 255), map(intensity, INTENSITY_LOW, INTENSITY_MEDIUM, 5, 20));
-    }
-    else if (intensity < INTENSITY_HIGH) {
-      // Medium-high intensity - chase effect
-      ledPatterns.chase(CHSV(hue, 255, 255), CHSV(hue, 128, 64), 3, map(intensity, INTENSITY_MEDIUM, INTENSITY_HIGH, 10, 40));
-    }
-    else {
-      // High intensity - fire effect (if motion) or twinkle effect (if presence only)
-      if (motion) {
-        // Modified parameters for fire effect to prevent white output at high intensity
-        // First parameter: cooling (lower = more heat)
-        // Second parameter: sparking (higher = more sparks)
-        ledPatterns.fire(map(intensity, INTENSITY_HIGH, INTENSITY_MAX, 100, 50), map(intensity, INTENSITY_HIGH, INTENSITY_MAX, 50, 120));
-      } else {
-        ledPatterns.twinkle(CHSV(hue, 255, 255), map(intensity, INTENSITY_HIGH, INTENSITY_MAX, 10, 40));
-      }
-    }
-  } 
-  else {
-    // No presence or motion - gentle breathing effect in blue
-    ledPatterns.breathing(CHSV(HUE_LOW, 255, 128), 5);
+  // Calculate power requirements
+  uint32_t maxCurrentMa = LED_COUNT * 60; // WS2812B can draw up to 60mA per LED at full white
+  Serial.print("Maximum potential current: ");
+  Serial.print(maxCurrentMa);
+  Serial.println(" mA");
+  
+  // Check if current limiting is needed
+  if (maxCurrentMa > 500) {
+    Serial.println("WARNING: High power LEDs - consider power limiting with FastLED.setMaxPowerInVoltsAndMilliamps()");
   }
   
-  FastLED.show();
+  // Set a reasonable power limit to prevent brownouts
+  FastLED.setMaxPowerInVoltsAndMilliamps(5, 500); 
+  Serial.println("Power limited to 500mA for safety");
+  
+  Serial.println("-----------------------------------\n");
+}
+
+/**
+ * Apply the elegant glow pattern with parameters modulated by presence and motion values
+ * 
+ * @param presenceIntensity Presence intensity value (0-255)
+ * @param motionIntensity Motion intensity value (0-255)
+ */
+void updateLEDPattern(bool presence, bool motion, uint8_t presenceIntensity, uint8_t motionIntensity) {
+    static uint32_t lastUpdate = 0;
+    uint32_t now = millis();
+    
+    // Apply simple exponential smoothing to the intensity values
+    smoothedPresenceIntensity = (SMOOTHING_FACTOR * presenceIntensity) + ((1.0 - SMOOTHING_FACTOR) * smoothedPresenceIntensity);
+    smoothedMotionIntensity = (SMOOTHING_FACTOR * motionIntensity) + ((1.0 - SMOOTHING_FACTOR) * smoothedMotionIntensity);
+    
+    // Use the rounded versions for parameter calculations
+    uint8_t smoothedPresenceInt = (uint8_t)smoothedPresenceIntensity;
+    uint8_t smoothedMotionInt = (uint8_t)smoothedMotionIntensity;
+    
+    // Only update parameters if enough time has passed since last update
+    if (now - lastUpdate < MIN_UPDATE_INTERVAL) {
+        return; // Skip this update cycle
+    }
+    
+    // Calculate new parameters
+    uint8_t newHue;
+    uint8_t newBrightness;
+    uint8_t newSpeed;
+    uint8_t newSpread;
+    
+    // Map presence to brightness (higher presence = brighter)
+    newBrightness = map(smoothedPresenceInt, 0, INTENSITY_MAX, BRIGHTNESS_MIN, BRIGHTNESS_MAX);
+    
+    // Map motion to speed (higher motion = faster animation)
+    newSpeed = map(smoothedMotionInt, 0, INTENSITY_MAX, SPEED_MIN, SPEED_MAX);
+    
+    // Blend hue based on both presence and motion
+    if (motion && smoothedMotionInt > INTENSITY_MEDIUM) {
+        // With high motion, shift toward warm colors (red/orange)
+        newHue = map(smoothedMotionInt, INTENSITY_MEDIUM, INTENSITY_MAX, HUE_NEUTRAL, HUE_WARM);
+    } 
+    else if (presence && smoothedPresenceInt > INTENSITY_LOW) {
+        // With presence but low motion, shift toward neutral colors (green)
+        newHue = map(smoothedPresenceInt, INTENSITY_LOW, INTENSITY_MAX, HUE_COOL, HUE_NEUTRAL);
+    }
+    else {
+        // Default cool color (blue) for low/no presence
+        newHue = HUE_COOL;
+    }
+    
+    // Set spread based on combined intensity
+    uint8_t combinedIntensity = max(smoothedPresenceInt, smoothedMotionInt);
+    newSpread = map(combinedIntensity, 0, INTENSITY_MAX, SPREAD_MIN, SPREAD_MAX);
+    
+    // Ensure minimum values for visibility
+    if (!presence && !motion) {
+        newBrightness = BRIGHTNESS_MIN + 20;
+        newSpeed = SPEED_MIN + 5;
+    }
+    
+    // Check if parameters have changed significantly enough to update pattern
+    bool parametersChanged = false;
+    
+    // Only modest thresholds, we want visual response but not flickering
+    if (abs((int16_t)newHue - (int16_t)lastHue) > 3 ||
+        abs((int16_t)newBrightness - (int16_t)lastBrightness) > 5 ||
+        abs((int16_t)newSpeed - (int16_t)lastSpeed) > 3 ||
+        abs((int16_t)newSpread - (int16_t)lastSpread) > 1) {
+        
+        parametersChanged = true;
+    }
+    
+    // Update the pattern if parameters have changed
+    if (parametersChanged) {
+        lastUpdate = now;
+        lastPatternChange = now;
+        
+        if (DEBUG_PRINTS) {
+            Serial.print("LED params: H=");
+            Serial.print(newHue);
+            Serial.print(", B=");
+            Serial.print(newBrightness);
+            Serial.print(", S=");
+            Serial.print(newSpeed);
+            Serial.print(", Spread=");
+            Serial.println(newSpread);
+        }
+        
+        // Capture current state for smooth transition
+        ledPatterns.captureCurrentState();
+        
+        // Apply the gentle glow pattern with new parameters
+        ledPatterns.gentleGlow(newHue, newBrightness, newSpeed, newSpread);
+        
+        // Start a quick transition
+        ledPatterns.startTransition(TRANSITION_DURATION);
+        
+        // Update last values
+        lastHue = newHue;
+        lastBrightness = newBrightness;
+        lastSpeed = newSpeed;
+        lastSpread = newSpread;
+    }
+    
+    // Always update transitions if any in progress
+    ledPatterns.updateTransitions();
+    
+    // Always show
+    FastLED.show();
 }
 
 void setup() {
@@ -163,6 +284,9 @@ void setup() {
   
   // Initialize LED strip
   initLEDs();
+  
+  // Check for LED hardware issues
+  diagnoseHardwareIssues();
   
   // Initialize sensor using the SparkFun library
   if (!presenceSensor.begin()) {
@@ -210,8 +334,11 @@ void setup() {
     Serial.print("Hysteresis set to: ");
     Serial.println(hysteresis);
     
-    // Show success pattern
-    ledPatterns.gradient(CHSV(96, 255, 255), CHSV(160, 255, 255)); // Green to Blue gradient
+    // Show success pattern - Convert to CRGB for our simplified implementation
+    CRGB greenColor = CRGB(0, 255, 0); // Green
+    CRGB blueColor = CRGB(0, 0, 255);  // Blue
+    
+    ledPatterns.gradient(greenColor, blueColor); // Use RGB version instead of CHSV
     FastLED.show();
     delay(1000);
   }
@@ -220,101 +347,92 @@ void setup() {
 }
 
 void loop() {
-  // Read sensor data using the correct pattern from examples
-  sths34pf80_tmos_drdy_status_t dataReady;
-  presenceSensor.getDataReady(&dataReady);
-  
-  // Always read the latest data and update LEDs whether new data is available or not
-  sths34pf80_tmos_func_status_t status;
-  presenceSensor.getStatus(&status);
-  
-  // Update presence detection based on the flag
-  bool newPresenceDetected = (status.pres_flag == 1);
-  presenceSensor.getPresenceValue(&presenceValue);
-  
-  // Check if presence is above minimum threshold
-  bool presenceAboveThreshold = (abs(presenceValue) > PRESENCE_MIN_VALUE);
-  
-  // Apply debouncing logic for presence detection
-  if (presenceAboveThreshold && newPresenceDetected) {
-    // Value is above threshold - increment detection counter
-    presenceDetectionCount = min(presenceDetectionCount + 1, 255);
-    presenceNonDetectionCount = 0;
+    // Read sensor data
+    sths34pf80_tmos_func_status_t status;
+    presenceSensor.getStatus(&status);
     
-    // Only set as detected if we have enough consecutive detection frames
-    if (presenceDetectionCount >= DEBOUNCE_COUNT) {
-      presenceDetected = true;
-      // Calculate intensity using logarithmic scaling
-      float presenceScaled = abs(presenceValue);
-      presenceIntensity = constrain((uint8_t)(log10(presenceScaled + 1) * PRESENCE_LOG_SCALE_FACTOR), 0, INTENSITY_MAX);
-    }
-  } else {
-    // Value is below threshold - increment non-detection counter
-    presenceNonDetectionCount = min(presenceNonDetectionCount + 1, 255);
-    presenceDetectionCount = 0;
+    // Check if presence is detected
+    bool newPresenceDetected = (status.pres_flag == 1);
+    presenceSensor.getPresenceValue(&presenceValue);
     
-    // Only clear detection if we have enough consecutive non-detection frames
-    if (presenceNonDetectionCount >= DEBOUNCE_COUNT) {
-      presenceDetected = false;
-      presenceIntensity = 0;
-    }
-  }
-  
-  // Update motion detection based on the flag
-  bool newMotionDetected = (status.mot_flag == 1);
-  presenceSensor.getMotionValue(&motionValue);
-  
-  // Check if motion is above minimum threshold
-  bool motionAboveThreshold = (abs(motionValue) > MOTION_MIN_VALUE);
-  
-  // Apply debouncing logic for motion detection
-  if (motionAboveThreshold && newMotionDetected) {
-    // Value is above threshold - increment detection counter
-    motionDetectionCount = min(motionDetectionCount + 1, 255);
-    motionNonDetectionCount = 0;
+    // Check if presence is above minimum threshold
+    bool presenceAboveThreshold = (abs(presenceValue) > PRESENCE_MIN_VALUE);
     
-    // Only set as detected if we have enough consecutive detection frames
-    if (motionDetectionCount >= DEBOUNCE_COUNT) {
-      motionDetected = true;
-      // Calculate intensity using logarithmic scaling
-      float motionScaled = abs(motionValue);
-      motionIntensity = constrain((uint8_t)(log10(motionScaled + 1) * MOTION_LOG_SCALE_FACTOR), 0, INTENSITY_MAX);
+    // Apply debouncing logic for presence detection
+    if (presenceAboveThreshold && newPresenceDetected) {
+        presenceDetectionCount = min(presenceDetectionCount + 1, 255);
+        presenceNonDetectionCount = 0;
+        
+        if (presenceDetectionCount >= DEBOUNCE_COUNT) {
+            presenceDetected = true;
+            // Calculate intensity using logarithmic scaling
+            float presenceScaled = abs(presenceValue);
+            presenceIntensity = constrain((uint8_t)(log10(presenceScaled + 1) * PRESENCE_LOG_SCALE_FACTOR), 0, INTENSITY_MAX);
+        }
+    } else {
+        presenceNonDetectionCount = min(presenceNonDetectionCount + 1, 255);
+        presenceDetectionCount = 0;
+        
+        if (presenceNonDetectionCount >= DEBOUNCE_COUNT) {
+            presenceDetected = false;
+            presenceIntensity = 0;
+        }
     }
-  } else {
-    // Value is below threshold - increment non-detection counter
-    motionNonDetectionCount = min(motionNonDetectionCount + 1, 255);
-    motionDetectionCount = 0;
     
-    // Only clear detection if we have enough consecutive non-detection frames
-    if (motionNonDetectionCount >= DEBOUNCE_COUNT) {
-      motionDetected = false;
-      motionIntensity = 0;
+    // Update motion detection based on the flag
+    bool newMotionDetected = (status.mot_flag == 1);
+    presenceSensor.getMotionValue(&motionValue);
+    
+    // Check if motion is above minimum threshold
+    bool motionAboveThreshold = (abs(motionValue) > MOTION_MIN_VALUE);
+    
+    // Apply debouncing logic for motion detection
+    if (motionAboveThreshold && newMotionDetected) {
+        motionDetectionCount = min(motionDetectionCount + 1, 255);
+        motionNonDetectionCount = 0;
+        
+        if (motionDetectionCount >= DEBOUNCE_COUNT) {
+            motionDetected = true;
+            // Calculate intensity using logarithmic scaling
+            float motionScaled = abs(motionValue);
+            motionIntensity = constrain((uint8_t)(log10(motionScaled + 1) * MOTION_LOG_SCALE_FACTOR), 0, INTENSITY_MAX);
+        }
+    } else {
+        motionNonDetectionCount = min(motionNonDetectionCount + 1, 255);
+        motionDetectionCount = 0;
+        
+        if (motionNonDetectionCount >= DEBOUNCE_COUNT) {
+            motionDetected = false;
+            motionIntensity = 0;
+        }
     }
-  }
-  
-  // Store current values for next comparison
-  lastPresenceValue = presenceValue;
-  lastMotionValue = motionValue;
-  
-  // Use the higher of the two intensities for the LED pattern
-  uint8_t combinedIntensity = max(presenceIntensity, motionIntensity);
-  
-  // Only print to serial when a detection occurs (prevents serial flooding)
-  if (presenceDetected || motionDetected) {
-    Serial.print("Sensor: ");
-    if (presenceDetected) Serial.print("Presence ");
-    if (motionDetected) Serial.print("Motion ");
-    Serial.print("- Presence Value: ");
-    Serial.print(presenceValue);
-    Serial.print(", Motion Value: ");
-    Serial.print(motionValue);
-    Serial.print(", Combined Intensity: ");
-    Serial.println(combinedIntensity);
-  }
-  
-  // Update LED pattern based on sensor readings
-  updateLEDPattern(presenceDetected, motionDetected, combinedIntensity);
-  
-  // Small delay to prevent too frequent updates
-  delay(10); // Reduced delay for faster response
+    
+    // Store current values for next comparison
+    lastPresenceValue = presenceValue;
+    lastMotionValue = motionValue;
+    
+    // Only print to serial when a detection occurs
+    if ((presenceDetected || motionDetected) && DEBUG_PRINTS) {
+        Serial.print("Sensor: ");
+        if (presenceDetected) Serial.print("Presence ");
+        if (motionDetected) Serial.print("Motion ");
+        Serial.print("- P:");
+        Serial.print(presenceValue);
+        Serial.print(", M:");
+        Serial.print(motionValue);
+        Serial.print(", P-Int:");
+        Serial.print(presenceIntensity);
+        Serial.print("/");
+        Serial.print(smoothedPresenceIntensity);
+        Serial.print(", M-Int:");
+        Serial.print(motionIntensity);
+        Serial.print("/");
+        Serial.println(smoothedMotionIntensity);
+    }
+    
+    // Update LED pattern based on sensor readings
+    updateLEDPattern(presenceDetected, motionDetected, presenceIntensity, motionIntensity);
+    
+    // Small delay to prevent too frequent updates
+    delay(10);
 }
