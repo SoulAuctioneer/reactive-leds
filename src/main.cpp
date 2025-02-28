@@ -11,6 +11,19 @@
 const uint8_t PRESENCE_LOG_SCALE_FACTOR = 60;  // Multiplier for log-scaled presence values
 const uint8_t MOTION_LOG_SCALE_FACTOR = 70;    // Multiplier for log-scaled motion values
 
+// Detection threshold constants
+const uint16_t PRESENCE_THRESHOLD_DEFAULT = 100;  // Default threshold for presence detection
+const uint8_t MOTION_THRESHOLD_DEFAULT = 50;     // Default threshold for motion detection
+const uint8_t HYSTERESIS_DEFAULT = 25;          // Default hysteresis value
+
+// Minimum absolute value to consider as a valid reading (to filter noise)
+const uint16_t PRESENCE_MIN_VALUE = 70;        // Ignore presence values below this threshold
+const uint16_t MOTION_MIN_VALUE = 70;          // Increased from 40 to 70 to filter more baseline noise
+
+// Debounce settings to prevent flickering
+const uint8_t DEBOUNCE_COUNT = 3;              // Number of consecutive readings required to change state
+const uint16_t DEBOUNCE_THRESHOLD = 10;        // Threshold for considering a value stable
+
 // LED pattern intensity thresholds
 const uint8_t INTENSITY_LOW = 64;     // Threshold for low intensity effects (breathing)
 const uint8_t INTENSITY_MEDIUM = 128; // Threshold for medium intensity effects (pulse)
@@ -36,10 +49,19 @@ uint8_t presenceIntensity = 0;
 int16_t presenceValue = 0;
 int16_t motionValue = 0;
 
+// Debouncing variables
+uint8_t presenceDetectionCount = 0;
+uint8_t presenceNonDetectionCount = 0;
+uint8_t motionDetectionCount = 0;
+uint8_t motionNonDetectionCount = 0;
+int16_t lastPresenceValue = 0;
+int16_t lastMotionValue = 0;
+
 // Store threshold values locally since there are no getter methods
-uint16_t presenceThreshold = 10;
-uint8_t motionThreshold = 15;
-uint8_t hysteresis = 50;
+// Actually, there are getter methods, but we'll keep these variables for easy access
+uint16_t presenceThreshold = PRESENCE_THRESHOLD_DEFAULT;
+uint8_t motionThreshold = MOTION_THRESHOLD_DEFAULT;
+uint8_t hysteresis = HYSTERESIS_DEFAULT;
 
 // Pattern selection
 PatternType currentPattern = PATTERN_BREATHING;
@@ -207,39 +229,72 @@ void loop() {
   presenceSensor.getStatus(&status);
   
   // Update presence detection based on the flag
-  presenceDetected = (status.pres_flag == 1);
-  if (presenceDetected) {
-    // Get the presence value
-    presenceSensor.getPresenceValue(&presenceValue);
+  bool newPresenceDetected = (status.pres_flag == 1);
+  presenceSensor.getPresenceValue(&presenceValue);
+  
+  // Check if presence is above minimum threshold
+  bool presenceAboveThreshold = (abs(presenceValue) > PRESENCE_MIN_VALUE);
+  
+  // Apply debouncing logic for presence detection
+  if (presenceAboveThreshold && newPresenceDetected) {
+    // Value is above threshold - increment detection counter
+    presenceDetectionCount = min(presenceDetectionCount + 1, 255);
+    presenceNonDetectionCount = 0;
     
-    // Implement logarithmic scaling for better dynamic range handling
-    // Use log10 to scale the values, which gives better distribution across the range
-    float presenceScaled = abs(presenceValue);
-    if (presenceScaled > 0) { // Avoid log(0)
-      // Log scale: log10(x+1) gives values 0-4.18 for inputs 0-15000
-      // Multiply by 60 to get 0-250 range, leaving room at top end
+    // Only set as detected if we have enough consecutive detection frames
+    if (presenceDetectionCount >= DEBOUNCE_COUNT) {
+      presenceDetected = true;
+      // Calculate intensity using logarithmic scaling
+      float presenceScaled = abs(presenceValue);
       presenceIntensity = constrain((uint8_t)(log10(presenceScaled + 1) * PRESENCE_LOG_SCALE_FACTOR), 0, INTENSITY_MAX);
-    } else {
+    }
+  } else {
+    // Value is below threshold - increment non-detection counter
+    presenceNonDetectionCount = min(presenceNonDetectionCount + 1, 255);
+    presenceDetectionCount = 0;
+    
+    // Only clear detection if we have enough consecutive non-detection frames
+    if (presenceNonDetectionCount >= DEBOUNCE_COUNT) {
+      presenceDetected = false;
       presenceIntensity = 0;
     }
   }
   
   // Update motion detection based on the flag
-  motionDetected = (status.mot_flag == 1);
-  if (motionDetected) {
-    // Get the motion value
-    presenceSensor.getMotionValue(&motionValue);
+  bool newMotionDetected = (status.mot_flag == 1);
+  presenceSensor.getMotionValue(&motionValue);
+  
+  // Check if motion is above minimum threshold
+  bool motionAboveThreshold = (abs(motionValue) > MOTION_MIN_VALUE);
+  
+  // Apply debouncing logic for motion detection
+  if (motionAboveThreshold && newMotionDetected) {
+    // Value is above threshold - increment detection counter
+    motionDetectionCount = min(motionDetectionCount + 1, 255);
+    motionNonDetectionCount = 0;
     
-    // Also use logarithmic scaling for motion values
-    float motionScaled = abs(motionValue);
-    if (motionScaled > 0) { // Avoid log(0)
-      // Log scale: log10(x+1) gives values 0-3.7 for inputs 0-5000
-      // Multiply by 70 to get 0-255 range
+    // Only set as detected if we have enough consecutive detection frames
+    if (motionDetectionCount >= DEBOUNCE_COUNT) {
+      motionDetected = true;
+      // Calculate intensity using logarithmic scaling
+      float motionScaled = abs(motionValue);
       motionIntensity = constrain((uint8_t)(log10(motionScaled + 1) * MOTION_LOG_SCALE_FACTOR), 0, INTENSITY_MAX);
-    } else {
+    }
+  } else {
+    // Value is below threshold - increment non-detection counter
+    motionNonDetectionCount = min(motionNonDetectionCount + 1, 255);
+    motionDetectionCount = 0;
+    
+    // Only clear detection if we have enough consecutive non-detection frames
+    if (motionNonDetectionCount >= DEBOUNCE_COUNT) {
+      motionDetected = false;
       motionIntensity = 0;
     }
   }
+  
+  // Store current values for next comparison
+  lastPresenceValue = presenceValue;
+  lastMotionValue = motionValue;
   
   // Use the higher of the two intensities for the LED pattern
   uint8_t combinedIntensity = max(presenceIntensity, motionIntensity);
