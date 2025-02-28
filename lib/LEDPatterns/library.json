@@ -1,0 +1,34 @@
+{
+    "name": "LEDPatterns",
+    "version": "0.1.0",
+    "description": "Library for generating various patterns on WS2812B LED strips",
+    "keywords": "led, ws2812b, patterns, animation",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/yourusername/LEDPatterns.git"
+    },
+    "authors": [
+        {
+            "name": "Your Name",
+            "email": "your.email@example.com",
+            "maintainer": true
+        }
+    ],
+    "license": "MIT",
+    "homepage": "https://github.com/yourusername/LEDPatterns",
+    "frameworks": "arduino",
+    "platforms": "*",
+    "dependencies": {
+        "fastled/FastLED": "^3.5.0"
+    },
+    "export": {
+        "include": [
+            "src/*.cpp",
+            "src/*.h"
+        ]
+    },
+    "build": {
+        "srcDir": "src",
+        "includeDir": "src"
+    }
+} 
