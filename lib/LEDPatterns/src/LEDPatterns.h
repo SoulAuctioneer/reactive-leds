@@ -16,16 +16,15 @@
 #define MAX_GLOW_POINTS 5
 
 /**
- * @brief Structure to track individual glow points with simplified fields
+ * @brief Structure to track individual glow points
  */
 struct GlowPoint {
-    uint16_t pos;             // Position of the glow point
-    uint8_t hue;              // Hue value
-    uint8_t spread;           // Spread of the glow (how many LEDs it affects)
-    uint8_t maxIntensity;     // Maximum intensity to reach
-    uint8_t currentIntensity; // Current intensity of the glow point (0-255)
-    int8_t state;             // State: 1=growing, 0=stable, -1=fading
-    bool active;              // Whether this glow point is active
+    uint16_t position;    // Position of the glow point
+    uint8_t intensity;    // Current intensity of the glow point (0-255)
+    uint8_t maxIntensity; // Maximum intensity to reach
+    int8_t state;         // State: 1=growing, 0=stable, -1=fading
+    uint8_t speed;        // Speed of growth/fade
+    uint8_t hue;          // Hue value
 };
 
 /**
@@ -45,12 +44,12 @@ enum PatternType {
 
 /**
  * @class LEDPatterns
- * @brief Simplified class for generating LED patterns
+ * @brief Class for generating various LED patterns
  */
 class LEDPatterns {
 public:
     /**
-     * @brief Constructor - initializes the LED pattern handler
+     * @brief Constructor
      * 
      * @param leds Pointer to CRGB array
      * @param numLeds Number of LEDs in the array
@@ -58,68 +57,70 @@ public:
     LEDPatterns(CRGB* leds, uint16_t numLeds);
     
     /**
-     * @brief Destructor - cleans up allocated memory
+     * @brief Destructor - Frees memory used for fire effect
      */
     ~LEDPatterns();
     
     /**
-     * @brief Sets all LEDs to a solid color
+     * @brief Apply a solid color pattern
      * 
-     * @param color The CRGB color to set
+     * @param color Color to use (CRGB or CHSV)
      */
     void solid(CRGB color);
-    
-    /**
-     * @brief Sets all LEDs to a solid color (HSV version)
-     * 
-     * @param color The CHSV color to set
-     */
     void solid(CHSV color);
     
     /**
-     * @brief Creates a gradient between two colors across the LED strip
+     * @brief Apply a breathing effect
      * 
-     * @param startColor First color in the gradient
-     * @param endColor Second color in the gradient
+     * @param color Base color
+     * @param speed Speed of the effect (1-255)
      */
-    void gradient(CRGB startColor, CRGB endColor);
+    void breathing(CHSV color, uint8_t speed = 10);
     
     /**
-     * @brief Legacy gradient function with CHSV colors for backward compatibility
+     * @brief Apply a gradient between two colors
      * 
-     * @param startColor First color in the gradient (CHSV)
-     * @param endColor Second color in the gradient (CHSV)
+     * @param startColor Start color
+     * @param endColor End color
      */
     void gradient(CHSV startColor, CHSV endColor);
     
     /**
-     * @brief Captures the current LED state to use as the starting point for transitions
+     * @brief Apply a rainbow effect
+     * 
+     * @param speed Speed of the effect (1-255)
      */
-    void captureCurrentState();
+    void rainbow(uint8_t speed = 10);
     
     /**
-     * @brief Starts a transition from the previous state to the current state
+     * @brief Apply a chase effect
      * 
-     * @param duration Duration of the transition in milliseconds
+     * @param color Color of the chase
+     * @param bgColor Background color
+     * @param size Size of the chase (number of LEDs)
+     * @param speed Speed of the effect (1-255)
      */
-    void startTransition(uint16_t duration);
+    void chase(CHSV color, CHSV bgColor, uint8_t size = 3, uint8_t speed = 10);
     
     /**
-     * @brief Updates active transitions by blending between previous and current states
+     * @brief Apply a pulse effect
      * 
-     * @return True if a transition is still in progress, false otherwise
+     * @param color Color of the pulse
+     * @param speed Speed of the effect (1-255)
      */
-    bool updateTransitions();
+    void pulse(CHSV color, uint8_t speed = 10);
     
     /**
-     * @brief Creates a gentle breathing/glowing effect with organic movement
+     * @brief Apply a gentle glow effect
      * 
-     * @param hue Base hue of the glow effect
-     * @param brightness Maximum brightness of the glow points
-     * @param speed Speed of the animation (higher = faster)
-     * @param spread Width of each glow point in LEDs
+     * Creates soft, random points of light that grow, then fade and diffuse to neighbors
+     * 
+     * @param baseHue Base hue to start from (will have slight variations)
+     * @param brightness Maximum brightness (0-255)
+     * @param speed Speed of the effect (1-255)
+     * @param spread Amount to spread to neighboring LEDs (1-10)
      */
-    void gentleGlow(uint8_t hue, uint8_t brightness, uint8_t speed, uint8_t spread = 5);
+    void gentleGlow(uint8_t baseHue, uint8_t brightness, uint8_t speed, uint8_t spread = 5);
     
     /**
      * @brief Apply a twinkle effect
@@ -129,53 +130,105 @@ public:
      */
     void twinkle(CHSV color, uint8_t chance = 10);
     
-    // Stubs for backward compatibility - empty implementations
-    void breathing(CHSV color, uint8_t speed = 10) {}
-    void rainbow(uint8_t speed = 10) {}
-    void chase(CHSV color, CHSV bgColor, uint8_t size = 3, uint8_t speed = 10) {}
-    void pulse(CHSV color, uint8_t speed = 10) {}
-    void fire(uint8_t cooling = 55, uint8_t sparking = 120) {}
+    /**
+     * @brief Get the number of LEDs
+     * 
+     * @return Number of LEDs
+     */
+    uint16_t getNumLeds() const {
+        return _numLeds;
+    }
+    
+    /**
+     * @brief Update LED transitions for smooth pattern changes
+     * @return True if transitions are still in progress
+     */
+    bool updateTransitions();
+    
+    /**
+     * @brief Start a transition to a new pattern
+     * @param targetPattern Function pointer to the target pattern
+     * @param duration Duration of the transition in milliseconds
+     */
+    void startTransition(uint16_t duration);
+    
+    /**
+     * @brief Capture the current LED state as a starting point for transitions
+     */
+    void captureCurrentState();
+    
+    /**
+     * @brief Generate the next frame of the current pattern without showing it
+     * Allows for pre-calculation of target states
+     */
+    void generateNextFrame();
+
+    // Target buffer pattern methods - for transition effects
+    
+    /**
+     * @brief Apply solid color pattern to target buffer (RGB)
+     * @param color CRGB color to apply to target buffer
+     */
+    void solidToTarget(CRGB color);
+    
+    /**
+     * @brief Apply solid color pattern to target buffer (HSV)
+     * @param color CHSV color to apply to target buffer
+     */
+    void solidToTarget(CHSV color);
+    
+    /**
+     * @brief Apply breathing effect to target buffer
+     * @param color Base color for breathing effect
+     * @param speed Speed of the breathing effect (1-255)
+     */
+    void breathingToTarget(CHSV color, uint8_t speed);
 
 private:
-    CRGB* leds;                      // Pointer to the LED array
-    CRGB* prevLeds;                  // Previous LED state for transitions
-    uint16_t numLeds;                // Number of LEDs
-    uint8_t currentPatternIndex;     // Current pattern index
+    CRGB* _leds;                // Pointer to the LED array
+    CRGB* _targetLeds;          // Target LED state for transitions
+    CRGB* _previousLeds;        // Previous LED state for transitions
+    uint16_t _numLeds;          // Number of LEDs
+    uint32_t _lastUpdate;       // Last update time for animations
+    uint8_t _step;              // Current step in animations
     
     // Glow effect variables
-    GlowPoint glowPoints[MAX_GLOW_POINTS]; // Array of active glow points
+    GlowPoint _glowPoints[MAX_GLOW_POINTS]; // Array of active glow points
+    uint32_t _lastGlowUpdate;               // Last update time for glow effect
+    uint8_t _activeGlowPoints;              // Number of currently active glow points
     
     // Transition variables
-    uint32_t transitionStartTime;    // When the transition started
-    uint16_t transitionDuration;     // Duration of the transition in ms
-    bool transitionActive;           // Whether a transition is in progress
+    uint32_t _transitionStartTime;   // When the transition started
+    uint16_t _transitionDuration;    // Duration of the transition in ms
+    bool _isTransitioning;           // Whether a transition is in progress
     
     /**
-     * @brief Adds a new glow point to the glow effect if one is available
-     * 
-     * @param pos Position for the new glow point
-     * @param hue Hue for the glow point
-     * @param spread Spread of the glow effect in LEDs
-     * @param intensity Maximum intensity of the glow point
-     * @return Index of the new glow point, or -1 if none available
+     * @brief Blend between two colors based on progress (0-255)
+     * @param start Starting color
+     * @param end Ending color
+     * @param progress Blend progress (0-255)
+     * @return Blended color
      */
-    int8_t addGlowPoint(uint16_t pos, uint8_t hue, uint8_t spread, uint8_t intensity);
+    CRGB blendColors(CRGB start, CRGB end, uint8_t progress);
     
     /**
-     * @brief Updates a glow point's state and intensity
+     * @brief Add a new glow point at a random position
      * 
-     * @param index Index of the glow point to update
-     * @param speed Speed of the glow effect (higher = faster)
-     * @return True if the glow point is still active, false if it's been removed
+     * @param baseHue Base hue to use (will be varied slightly)
+     * @param brightness Maximum brightness to reach
+     * @param speed Speed of growth/fade
+     * @return True if a new glow point was added, false if at capacity
      */
-    bool updateGlowPoint(uint8_t index, uint8_t speed);
+    bool addGlowPoint(uint8_t baseHue, uint8_t brightness, uint8_t speed);
     
     /**
-     * @brief Renders a glow point into the LED array
+     * @brief Update an existing glow point
      * 
-     * @param index Index of the glow point to render
+     * @param pointIndex Index of the glow point to update
+     * @param spread Amount to spread to neighboring LEDs
+     * @return True if the glow point is still active, false if it has faded out
      */
-    void renderGlowPoint(uint8_t index);
+    bool updateGlowPoint(uint8_t pointIndex, uint8_t spread);
 };
 
 #endif // LED_PATTERNS_H 

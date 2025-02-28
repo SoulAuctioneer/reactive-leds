@@ -1,332 +1,424 @@
 /**
  * @file LEDPatterns.cpp
  * @brief Implementation file for LED patterns for WS2812B LED strips
- * 
- * Simplified version that focuses only on the gentle glow effect 
- * with minimal transitions to improve responsiveness.
  */
 
 #include "LEDPatterns.h"
 
 /**
- * Constructor - initializes the LED pattern handler
- * 
- * @param leds Pointer to the CRGB LED array
- * @param numLeds Number of LEDs in the array
+ * Constructor for LEDPatterns
  */
-LEDPatterns::LEDPatterns(CRGB* leds, uint16_t numLeds) {
-    this->leds = leds;
-    this->numLeds = numLeds;
-    this->currentPatternIndex = 0;
-    this->transitionActive = false;
-    this->transitionStartTime = 0;
-    this->transitionDuration = 0;
-    
-    // Initialize previous state array
-    this->prevLeds = new CRGB[numLeds];
-    for (uint16_t i = 0; i < numLeds; i++) {
-        this->prevLeds[i] = CRGB::Black;
+LEDPatterns::LEDPatterns(CRGB* leds, uint16_t numLeds) :
+    _leds(leds),
+    _numLeds(numLeds),
+    _lastUpdate(0),
+    _step(0),
+    _targetLeds(nullptr),
+    _previousLeds(nullptr),
+    _lastGlowUpdate(0),
+    _activeGlowPoints(0),
+    _transitionStartTime(0),
+    _transitionDuration(0),
+    _isTransitioning(false)
+{
+    // Initialize glow points
+    for (uint8_t i = 0; i < MAX_GLOW_POINTS; i++) {
+        _glowPoints[i].position = 0;
+        _glowPoints[i].intensity = 0;
+        _glowPoints[i].maxIntensity = 0;
+        _glowPoints[i].state = 0;
+        _glowPoints[i].speed = 0;
+        _glowPoints[i].hue = 0;
     }
     
-    // Initialize glow points array with empty glow points
-    for (uint8_t i = 0; i < MAX_GLOW_POINTS; i++) {
-        glowPoints[i].active = false;
+    if (_numLeds > 0) {
+        // Allocate memory for transition arrays
+        _targetLeds = new CRGB[_numLeds];
+        _previousLeds = new CRGB[_numLeds];
+        
+        // Initialize transition arrays
+        for (uint16_t i = 0; i < _numLeds; i++) {
+            _targetLeds[i] = CRGB::Black;
+            _previousLeds[i] = CRGB::Black;
+        }
     }
 }
 
 /**
- * Destructor - cleans up allocated memory
+ * Destructor - free allocated memory
  */
 LEDPatterns::~LEDPatterns() {
-    delete[] this->prevLeds;
+    if (_targetLeds != nullptr) {
+        delete[] _targetLeds;
+        _targetLeds = nullptr;
+    }
+    
+    if (_previousLeds != nullptr) {
+        delete[] _previousLeds;
+        _previousLeds = nullptr;
+    }
 }
 
 /**
- * Sets all LEDs to a solid color
- * 
- * @param color The CRGB color to set
+ * Apply a solid color pattern (RGB)
  */
 void LEDPatterns::solid(CRGB color) {
-    fill_solid(leds, numLeds, color);
-}
-
-/**
- * Creates a gradient between two colors across the LED strip
- * 
- * @param startColor First color in the gradient
- * @param endColor Second color in the gradient
- */
-void LEDPatterns::gradient(CRGB startColor, CRGB endColor) {
-    fill_gradient_RGB(leds, 0, startColor, numLeds - 1, endColor);
-}
-
-/**
- * Captures the current LED state to use as the starting point for transitions
- */
-void LEDPatterns::captureCurrentState() {
-    for (uint16_t i = 0; i < numLeds; i++) {
-        prevLeds[i] = leds[i];
-    }
-}
-
-/**
- * Starts a transition from the previous state to the current state
- * 
- * @param duration Duration of the transition in milliseconds
- */
-void LEDPatterns::startTransition(uint16_t duration) {
-    transitionActive = true;
-    transitionStartTime = millis();
-    transitionDuration = duration;
-}
-
-/**
- * Updates active transitions by blending between previous and current states
- * 
- * @return True if a transition is still in progress, false otherwise
- */
-bool LEDPatterns::updateTransitions() {
-    if (!transitionActive) {
-        return false;
-    }
-    
-    uint32_t currentTime = millis();
-    uint32_t elapsed = currentTime - transitionStartTime;
-    
-    if (elapsed >= transitionDuration) {
-        // Transition complete - don't blend anymore, just use the final state
-        // No code needed here as leds[] already contains the target state
-        // We just need to mark the transition as complete
-        transitionActive = false;
-        return false;
-    }
-    
-    // Calculate progress (0.0 to 1.0)
-    float progress = (float)elapsed / (float)transitionDuration;
-    
-    // Blend the colors based on progress
-    for (uint16_t i = 0; i < numLeds; i++) {
-        leds[i] = blend(prevLeds[i], leds[i], progress * 255);
-    }
-    
-    return true;
-}
-
-/**
- * Adds a new glow point to the glow effect if one is available
- * 
- * @param pos Position for the new glow point
- * @param hue Hue for the glow point
- * @param spread Spread of the glow effect in LEDs
- * @param intensity Maximum intensity of the glow point
- * @return Index of the new glow point, or -1 if none available
- */
-int8_t LEDPatterns::addGlowPoint(uint16_t pos, uint8_t hue, uint8_t spread, uint8_t intensity) {
-    // Find an inactive glow point slot
-    for (uint8_t i = 0; i < MAX_GLOW_POINTS; i++) {
-        if (!glowPoints[i].active) {
-            glowPoints[i].active = true;
-            glowPoints[i].pos = pos;
-            glowPoints[i].hue = hue;
-            glowPoints[i].spread = spread;
-            glowPoints[i].maxIntensity = intensity;
-            glowPoints[i].currentIntensity = 0;
-            glowPoints[i].state = 1; // Growing
-            return i;
-        }
-    }
-    return -1; // No available glow point slots
-}
-
-/**
- * Updates a glow point's state and intensity
- * 
- * @param index Index of the glow point to update
- * @param speed Speed of the glow effect (higher = faster)
- * @return True if the glow point is still active, false if it's been removed
- */
-bool LEDPatterns::updateGlowPoint(uint8_t index, uint8_t speed) {
-    if (!glowPoints[index].active) {
-        return false;
-    }
-    
-    // Validate state - fix if corrupted
-    if (glowPoints[index].state != 1 && glowPoints[index].state != 0 && glowPoints[index].state != -1) {
-        glowPoints[index].state = -1; // Force to fading state if corrupted
-    }
-    
-    // Update intensity based on state
-    uint8_t change = max(1, speed / 20); // Minimum change of 1, max of 12 for speed 255
-    
-    if (glowPoints[index].state == 1) { // Growing
-        // Calculate new intensity but prevent overflow
-        uint8_t newIntensity = glowPoints[index].currentIntensity;
-        if (255 - newIntensity > change) {
-            newIntensity += change;
-        } else {
-            newIntensity = 255;
-        }
-        
-        // Cap at max intensity
-        if (newIntensity > glowPoints[index].maxIntensity) {
-            newIntensity = glowPoints[index].maxIntensity;
-        }
-        
-        glowPoints[index].currentIntensity = newIntensity;
-        
-        // If reached max intensity, switch to stable state
-        if (glowPoints[index].currentIntensity >= glowPoints[index].maxIntensity) {
-            glowPoints[index].state = 0; // Stable
-        }
-    }
-    else if (glowPoints[index].state == -1) { // Fading
-        if (glowPoints[index].currentIntensity <= change) {
-            // Intensity would go to zero or negative, remove this glow point
-            glowPoints[index].active = false;
-            return false;
-        }
-        glowPoints[index].currentIntensity -= change;
-    }
-    else if (glowPoints[index].state == 0) { // Stable, random chance to start fading
-        if (random8() < 5) { // ~2% chance per update to start fading
-            glowPoints[index].state = -1; // Start fading
-        }
-    }
-    
-    return true;
-}
-
-/**
- * Renders a glow point into the LED array
- * 
- * @param index Index of the glow point to render
- */
-void LEDPatterns::renderGlowPoint(uint8_t index) {
-    if (!glowPoints[index].active) {
-        return;
-    }
-    
-    // Calculate the intensity value as a fraction of 255
-    uint8_t intensity = glowPoints[index].currentIntensity;
-    uint8_t hue = glowPoints[index].hue;
-    uint8_t spread = glowPoints[index].spread;
-    uint16_t pos = glowPoints[index].pos;
-    
-    // Create a "glow" that spans multiple LEDs with falloff from center
-    for (int16_t i = -spread; i <= spread; i++) {
-        // Calculate position with wraparound
-        int16_t actualPos = (pos + i) % numLeds;
-        if (actualPos < 0) actualPos += numLeds;
-        
-        // Calculate falloff based on distance from center (quadratic falloff)
-        float falloff = 1.0 - (float)(i * i) / (float)((spread + 1) * (spread + 1));
-        if (falloff < 0) falloff = 0;
-        
-        // Calculate color with intensity factored in
-        CHSV hsv(hue, 240, intensity * falloff);
-        CRGB rgb;
-        hsv2rgb_rainbow(hsv, rgb);
-        
-        // Blend with existing color (additive blending)
-        leds[actualPos] += rgb;
-    }
-}
-
-/**
- * Creates a gentle breathing/glowing effect with organic movement
- * 
- * @param hue Base hue of the glow effect
- * @param brightness Maximum brightness of the glow points
- * @param speed Speed of the animation (higher = faster)
- * @param spread Width of each glow point in LEDs
- */
-void LEDPatterns::gentleGlow(uint8_t hue, uint8_t brightness, uint8_t speed, uint8_t spread) {
-    // Clear LEDs first
-    fill_solid(leds, numLeds, CRGB::Black);
-    
-    // Update existing glow points - apply new hue and brightness
-    for (uint8_t i = 0; i < MAX_GLOW_POINTS; i++) {
-        if (glowPoints[i].active) {
-            // Update the hue of existing glow points to match the new value
-            // This helps create a more immediate response to color changes
-            glowPoints[i].hue = hue + random8(10) - 5; // Small variation
-            
-            // Update max intensity based on new brightness
-            glowPoints[i].maxIntensity = brightness - random8(10);
-            
-            // Update spread if appropriate
-            glowPoints[i].spread = spread + random8(2) - 1;
-            
-            // Update the glow point state
-            bool stillActive = updateGlowPoint(i, speed);
-            
-            // If still active, render it
-            if (stillActive) {
-                renderGlowPoint(i);
-            }
-        }
-    }
-    
-    // Count active glow points
-    uint8_t activeCount = 0;
-    for (uint8_t i = 0; i < MAX_GLOW_POINTS; i++) {
-        if (glowPoints[i].active) {
-            activeCount++;
-        }
-    }
-    
-    // Add new glow points periodically based on speed
-    if (activeCount < MAX_GLOW_POINTS) {
-        uint8_t threshold = map(speed, 0, 255, 250, 180); // Faster speed = lower threshold = more frequent additions
-        if (random8() > threshold) {
-            uint16_t pos = random16(numLeds);
-            uint8_t hueVar = random8(10); // Small hue variation
-            uint8_t spreadVar = random8(2); // Small spread variation
-            uint8_t intensityVar = random8(20); // Intensity variation
-            
-            addGlowPoint(pos, 
-                        hue + hueVar - 5, // +/- 5 hue variation
-                        spread + spreadVar - 1, // +/- 1 spread variation
-                        brightness - intensityVar); // Slightly reduced random intensity
-        }
-    }
+    fill_solid(_leds, _numLeds, color);
 }
 
 /**
  * Apply a solid color pattern (HSV)
- * Used for error indicators
  */
 void LEDPatterns::solid(CHSV color) {
-    fill_solid(leds, numLeds, color);
+    fill_solid(_leds, _numLeds, color);
 }
 
 /**
- * Legacy gradient function with CHSV colors for backward compatibility
- * 
- * @param startColor First color in the gradient (CHSV)
- * @param endColor Second color in the gradient (CHSV)
+ * Apply a breathing effect
+ */
+void LEDPatterns::breathing(CHSV color, uint8_t speed) {
+    // Calculate brightness based on time
+    uint8_t brightness = beatsin8(speed, 0, 255);
+    
+    // Apply brightness to the color
+    CHSV adjustedColor = CHSV(color.h, color.s, brightness);
+    
+    // Fill all LEDs with the adjusted color
+    fill_solid(_leds, _numLeds, adjustedColor);
+}
+
+/**
+ * Apply a gradient between two colors
  */
 void LEDPatterns::gradient(CHSV startColor, CHSV endColor) {
-    // Convert CHSV to CRGB and use the RGB version
-    CRGB startRGB, endRGB;
-    hsv2rgb_rainbow(startColor, startRGB);
-    hsv2rgb_rainbow(endColor, endRGB);
+    fill_gradient_HSV(_leds, 0, startColor, _numLeds - 1, endColor, SHORTEST_HUES);
+}
+
+/**
+ * Apply a rainbow effect
+ */
+void LEDPatterns::rainbow(uint8_t speed) {
+    // Get current time for animation
+    uint32_t ms = millis();
     
-    gradient(startRGB, endRGB);
+    // Only update if enough time has passed
+    if (ms - _lastUpdate >= 20) {
+        _lastUpdate = ms;
+        
+        // Increment step based on speed
+        _step += speed;
+        
+        // Fill the LEDs with a gradient from current step
+        fill_rainbow(_leds, _numLeds, _step, 255 / _numLeds);
+    }
+}
+
+/**
+ * Apply a chase effect
+ */
+void LEDPatterns::chase(CHSV color, CHSV bgColor, uint8_t size, uint8_t speed) {
+    // Start by filling with background color
+    fill_solid(_leds, _numLeds, bgColor);
+    
+    // Get current time for animation
+    uint32_t ms = millis();
+    
+    // Update step based on time and speed
+    uint16_t step = (ms / (256 - speed)) % _numLeds;
+    
+    // Draw chase dots
+    for (uint8_t i = 0; i < size; i++) {
+        uint16_t pos = (step + i) % _numLeds;
+        _leds[pos] = color;
+    }
+}
+
+/**
+ * Apply a pulse effect
+ */
+void LEDPatterns::pulse(CHSV color, uint8_t speed) {
+    // Get current time
+    uint32_t ms = millis();
+    
+    // Create a pulse using a sine wave
+    uint8_t brightness = beatsin8(speed, 0, 255, ms, 0);
+    
+    // Propagate the pulse through the strip
+    for (uint16_t i = 0; i < _numLeds; i++) {
+        // Phase shift based on LED position to create a wave
+        uint8_t wave = beatsin8(speed, 0, 255, ms, i * 10);
+        
+        // Use phase-shifted brightness for this LED
+        _leds[i] = CHSV(color.h, color.s, wave);
+    }
+}
+
+/**
+ * Apply a gentle glow effect 
+ * Creates soft, random points of light that grow, then fade and diffuse to neighbors
+ */
+void LEDPatterns::gentleGlow(uint8_t baseHue, uint8_t brightness, uint8_t speed, uint8_t spread) {
+    // Get current time
+    uint32_t currentTime = millis();
+    
+    // Dim all LEDs slightly - this creates a nice fading trail effect
+    fadeToBlackBy(_leds, _numLeds, 20);
+    
+    // Only update every 20ms (50fps) to avoid too rapid changes
+    if (currentTime - _lastGlowUpdate >= 20) {
+        _lastGlowUpdate = currentTime;
+        
+        // Chance to add a new glow point based on speed
+        // Higher speed = more frequent new glow points
+        if (random8() < map(speed, 1, 255, 5, 40) && _activeGlowPoints < MAX_GLOW_POINTS) {
+            // Try to add a new glow point with the given parameters
+            if (addGlowPoint(baseHue, brightness, speed)) {
+                _activeGlowPoints++;
+            }
+        }
+        
+        // Update existing glow points and remove any that have faded out
+        for (uint8_t i = 0; i < MAX_GLOW_POINTS; i++) {
+            // Skip inactive glow points
+            if (_glowPoints[i].state == 0 && _glowPoints[i].intensity == 0) continue;
+            
+            // Update this glow point and check if it's still active
+            if (!updateGlowPoint(i, spread)) {
+                // Glow point has faded out completely
+                _glowPoints[i].state = 0;
+                _glowPoints[i].intensity = 0;
+                _activeGlowPoints = max(0, _activeGlowPoints - 1);
+            }
+        }
+    }
+}
+
+/**
+ * Add a new glow point at a random position
+ */
+bool LEDPatterns::addGlowPoint(uint8_t baseHue, uint8_t brightness, uint8_t speed) {
+    // Find an inactive slot
+    for (uint8_t i = 0; i < MAX_GLOW_POINTS; i++) {
+        if (_glowPoints[i].state == 0 && _glowPoints[i].intensity == 0) {
+            // Found an inactive slot, initialize a new glow point
+            _glowPoints[i].position = random16(_numLeds);
+            _glowPoints[i].intensity = 1; // Start very dim
+            _glowPoints[i].maxIntensity = map(brightness, 0, 255, 100, 255); // Cap based on brightness param
+            _glowPoints[i].state = 1; // Growing
+            _glowPoints[i].speed = map(speed, 1, 255, 2, 15); // Map speed to a reasonable range
+            
+            // Vary hue slightly from the base hue (±15)
+            _glowPoints[i].hue = baseHue + random8(31) - 15;
+            
+            return true;
+        }
+    }
+    return false; // No inactive slots found
+}
+
+/**
+ * Update an existing glow point
+ */
+bool LEDPatterns::updateGlowPoint(uint8_t pointIndex, uint8_t spread) {
+    GlowPoint& point = _glowPoints[pointIndex];
+    
+    // Skip inactive points
+    if (point.state == 0 && point.intensity == 0) {
+        return false;
+    }
+    
+    // Update the intensity based on current state
+    if (point.state == 1) { // Growing
+        // Increase intensity
+        point.intensity = qadd8(point.intensity, point.speed);
+        
+        // If reached max intensity, transition to stable state briefly
+        if (point.intensity >= point.maxIntensity) {
+            point.intensity = point.maxIntensity;
+            point.state = 0; // Stable
+        }
+    }
+    else if (point.state == 0) { // Stable
+        // Stay stable for a brief moment then start fading
+        point.state = -1; // Start fading
+    }
+    else if (point.state == -1) { // Fading
+        // Decrease intensity
+        point.intensity = qsub8(point.intensity, point.speed / 2); // Fade slower than growth
+        
+        // If reached 0, mark as inactive
+        if (point.intensity <= 1) {
+            point.intensity = 0;
+            point.state = 0;
+            return false;
+        }
+    }
+    
+    // Create a color based on hue and current intensity
+    CHSV color = CHSV(point.hue, 240, point.intensity);
+    
+    // Apply the color to the center point
+    _leds[point.position] = color;
+    
+    // Spread to surrounding LEDs with decreasing intensity
+    // Control spread based on parameter (higher spread = more diffusion)
+    uint8_t maxSpread = map(spread, 1, 10, 2, 8);
+    for (uint8_t i = 1; i <= maxSpread; i++) {
+        // Calculate intensity falloff (quadratic falloff for more natural look)
+        uint8_t falloff = (point.intensity * (maxSpread - i) * (maxSpread - i)) / (maxSpread * maxSpread);
+        
+        // Skip if the falloff is too small
+        if (falloff < 5) continue;
+        
+        // Apply to LEDs to the left
+        int16_t leftPos = (point.position - i + _numLeds) % _numLeds;
+        _leds[leftPos] += CHSV(point.hue, 240, falloff);
+        
+        // Apply to LEDs to the right
+        int16_t rightPos = (point.position + i) % _numLeds;
+        _leds[rightPos] += CHSV(point.hue, 240, falloff);
+    }
+    
+    return true;
+}
+
+/**
+ * Capture the current LED state as a starting point for transitions
+ */
+void LEDPatterns::captureCurrentState() {
+    // Copy current LED values to the previous array
+    for (uint16_t i = 0; i < _numLeds; i++) {
+        _previousLeds[i] = _leds[i];
+    }
+}
+
+/**
+ * Start a transition to a new pattern
+ */
+void LEDPatterns::startTransition(uint16_t duration) {
+    // Store current state before starting transition
+    captureCurrentState();
+    
+    // Set transition parameters
+    _transitionStartTime = millis();
+    _transitionDuration = duration;
+    _isTransitioning = true;
+}
+
+/**
+ * Generate the next frame of the current pattern without showing it
+ * This method needs a function pointer to the pattern method to call
+ * 
+ * @param patternFunction Function pointer to the pattern function
+ * @param args Variable arguments for the pattern function
+ */
+void LEDPatterns::generateNextFrame() {
+    // This is a base implementation that doesn't do anything
+    // In practice, you should use the target buffer directly from your pattern functions
+    // The switching of buffers is handled in startTransition and updateTransitions
+    
+    // Ideally, we would use function pointers to call pattern functions
+    // but this is complex due to different pattern function signatures
+    // 
+    // For simplicity, we rely on the pattern function writing directly
+    // to the _targetLeds array when called after swapping buffers
+}
+
+/**
+ * Update LED transitions for smooth pattern changes
+ */
+bool LEDPatterns::updateTransitions() {
+    if (!_isTransitioning) {
+        return false;
+    }
+    
+    uint32_t currentTime = millis();
+    uint32_t elapsed = currentTime - _transitionStartTime;
+    
+    // Check if transition is complete
+    if (elapsed >= _transitionDuration) {
+        // Copy target values to current LEDs
+        for (uint16_t i = 0; i < _numLeds; i++) {
+            _leds[i] = _targetLeds[i];
+        }
+        _isTransitioning = false;
+        return false;
+    }
+    
+    // Calculate transition progress (0-255)
+    uint8_t progress = map(elapsed, 0, _transitionDuration, 0, 255);
+    
+    // Blend between previous and target states
+    for (uint16_t i = 0; i < _numLeds; i++) {
+        _leds[i] = blendColors(_previousLeds[i], _targetLeds[i], progress);
+    }
+    
+    return true;
+}
+
+/**
+ * Blend between two colors based on progress
+ */
+CRGB LEDPatterns::blendColors(CRGB start, CRGB end, uint8_t progress) {
+    // Use the built-in FastLED function for color blending
+    return blend(start, end, progress);
+}
+
+// The following helper methods can be used to apply patterns to the target buffer
+/**
+ * Apply solid color pattern to target buffer (RGB)
+ */
+void LEDPatterns::solidToTarget(CRGB color) {
+    // Ensure we have a target buffer
+    if (_targetLeds == nullptr) return;
+    
+    // Fill target buffer with color
+    for (uint16_t i = 0; i < _numLeds; i++) {
+        _targetLeds[i] = color;
+    }
+}
+
+/**
+ * Apply solid color pattern to target buffer (HSV)
+ */
+void LEDPatterns::solidToTarget(CHSV color) {
+    if (_targetLeds == nullptr) return;
+    
+    // Fill target buffer with color
+    for (uint16_t i = 0; i < _numLeds; i++) {
+        _targetLeds[i] = color;
+    }
+}
+
+/**
+ * Apply breathing effect to target buffer
+ */
+void LEDPatterns::breathingToTarget(CHSV color, uint8_t speed) {
+    if (_targetLeds == nullptr) return;
+    
+    // Calculate brightness based on time
+    uint8_t brightness = beatsin8(speed, 0, 255);
+    
+    // Apply brightness to the color
+    CHSV adjustedColor = CHSV(color.h, color.s, brightness);
+    
+    // Fill target buffer with the adjusted color
+    for (uint16_t i = 0; i < _numLeds; i++) {
+        _targetLeds[i] = adjustedColor;
+    }
 }
 
 /**
  * Apply a twinkle effect
- * Used for error indicator
  */
 void LEDPatterns::twinkle(CHSV color, uint8_t chance) {
     // Dim all LEDs slightly
-    fadeToBlackBy(leds, numLeds, 10);
+    fadeToBlackBy(_leds, _numLeds, 10);
     
     // Randomly add bright pixels
-    for (uint16_t i = 0; i < numLeds; i++) {
+    for (uint16_t i = 0; i < _numLeds; i++) {
         if (random8() < chance) {
-            leds[i] = CHSV(color.h, color.s, 255);
+            _leds[i] = CHSV(color.h, color.s, 255);
         }
     }
 } 
